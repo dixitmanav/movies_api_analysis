@@ -4,7 +4,7 @@ MLDS 400 (Topics in Data Engineering) final project, Northwestern University, Fa
 
 A pipeline that pulls trending and now-playing movies from **TMDb** every day, adds critic and audience ratings from **OMDb**, and stores the history in a database so we can find out what makes a movie trend.
 
-> Current status: exploring the two APIs. `explore_apis.ipynb` pulls a sample from each one so we can see what the data looks like.
+> Current status: `build_database.py` loads both APIs into a SQLite database. The Airflow DAG comes next.
 
 ## Data sources
 
@@ -54,7 +54,25 @@ OMDB_API_KEY=your_omdb_key
 pip install pandas requests python-dotenv jupyter
 ```
 
-### 5. Look at the data
+### 5. Build the database
+
+```bash
+python build_database.py
+```
+
+This creates `movies.db` (SQLite) in the repo folder with five tables:
+
+| Table | One row per | What's in it |
+| --- | --- | --- |
+| `movies` | movie | title, release date, runtime, budget, revenue, IMDb ID |
+| `genres` | genre | genre name |
+| `movie_genres` | movie + genre | links movies to their genres |
+| `daily_snapshots` | movie + list + day | rank, popularity and votes on that day's trending / now-playing list |
+| `omdb_ratings` | movie | IMDb rating and votes, Rotten Tomatoes, Metascore, US box office |
+
+Run it once a day to build up history. Each run adds a new dated snapshot, only looks up movies it hasn't seen before, and doesn't duplicate anything if run twice in one day. `movies.db` is in `.gitignore`, so each user builds their own.
+
+### 6. Look at the raw API data (optional)
 
 ```bash
 jupyter notebook explore_apis.ipynb
@@ -66,9 +84,11 @@ Run all cells. The first cell checks that both keys loaded. The rest show today'
 
 ```
 movies_api_analysis/
+├── build_database.py    # pulls both APIs into movies.db
 ├── explore_apis.ipynb   # first look at both APIs
 ├── .env.example         # template for your API keys
 ├── .env                 # your real keys (not committed)
+├── movies.db            # created by build_database.py (not committed)
 ├── .gitignore
 └── README.md
 ```
