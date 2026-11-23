@@ -38,7 +38,7 @@ OMDB_URL = "https://www.omdbapi.com/"
 TODAY = date.today().isoformat()
 
 MAX_PAGES = 5               # pages per TMDb list; 20 movies per page, so top 100
-OMDB_DAILY_BUDGET = 750     # OMDb free key allows 1,000 a day; keep 250 spare for notebooks/testing
+OMDB_DAILY_BUDGET = 1000    # OMDb free key allows 1,000 a day
 REFRESH_AFTER_DAYS = 7      # re-check a movie's OMDb ratings once they're this many days old
 
 
