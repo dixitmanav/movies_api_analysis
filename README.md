@@ -96,4 +96,7 @@ movies_api_analysis/
 ## Team
 
 - Manav Dixit
-- _(add teammates)_
+- Shivani Kedila
+- Ayush Tharval
+- Mehwish Ahmed
+- Reeja Kurian
