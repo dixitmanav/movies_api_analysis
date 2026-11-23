@@ -7,15 +7,19 @@ and saves everything to a SQLite database (movies.db).
 Run it from the repo folder:
     python build_database.py
 
-Safe to run every day:
+Safe to run every day (or several times a day):
   - each run adds a new dated snapshot of the trending / now-playing lists
-  - movies already in the database are not looked up again (saves API calls)
+  - pulls several pages of each list (20 movies per page), not just the first
+  - TMDb details are only looked up for movies not already in the database
+  - OMDb is capped at OMDB_DAILY_BUDGET calls per day, counted across all runs that day
+  - leftover OMDb calls are used to refresh old ratings (e.g. new releases that
+    had no Rotten Tomatoes score yet when we first looked them up)
   - running twice on the same day does not create duplicates
 """
 
 import os
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import requests
@@ -32,6 +36,10 @@ DB_PATH = "movies.db"
 TMDB_URL = "https://api.themoviedb.org/3"
 OMDB_URL = "https://www.omdbapi.com/"
 TODAY = date.today().isoformat()
+
+MAX_PAGES = 5               # pages per TMDb list; 20 movies per page, so top 100
+OMDB_DAILY_BUDGET = 750     # OMDb free key allows 1,000 a day; keep 250 spare for notebooks/testing
+REFRESH_AFTER_DAYS = 7      # re-check a movie's OMDb ratings once they're this many days old
 
 
 # ---------------------------------------------------------------- tables
@@ -75,12 +83,12 @@ CREATE TABLE IF NOT EXISTS omdb_ratings (
     imdb_id             TEXT PRIMARY KEY REFERENCES movies (imdb_id),
     imdb_rating         REAL,
     imdb_votes          INTEGER,
-    rotten_tomatoes_pct INTEGER,
+    rotten_tomatoes_pct INTEGER,    -- Tomatometer: % of critics with a positive review
     metascore           INTEGER,
     box_office_usd      INTEGER,    -- US gross
     rated               TEXT,       -- PG-13, R, ...
     awards              TEXT,
-    fetched_on          DATE
+    fetched_on          DATE        -- last day we asked OMDb about this movie
 );
 """
 
@@ -94,14 +102,19 @@ def tmdb_get(path, **params):
     return response.json()
 
 
+class OmdbLimitReached(Exception):
+    """OMDb refused the call because this key used up its daily requests."""
+
+
 def omdb_get(imdb_id):
     """GET one movie from OMDb. Returns None if OMDb doesn't have it."""
     response = requests.get(OMDB_URL, params={"apikey": OMDB_API_KEY, "i": imdb_id}, timeout=30)
     data = response.json()
     if data.get("Response") == "False":
-        if "limit" in data.get("Error", "").lower():
-            raise RuntimeError("OMDb daily limit reached (1,000 calls). Run again tomorrow.")
-        if "invalid api key" in data.get("Error", "").lower():
+        error = data.get("Error", "").lower()
+        if "limit" in error:
+            raise OmdbLimitReached("OMDb daily limit reached. Run again tomorrow.")
+        if "invalid api key" in error:
             raise RuntimeError("OMDb says the API key is invalid. Check OMDB_API_KEY in .env.")
         return None
     return data
@@ -136,11 +149,22 @@ def load_genres(cursor):
     print(f"genres: {len(genres)} from TMDb")
 
 
+def get_list(path, **params):
+    """Get up to MAX_PAGES pages of a TMDb list (20 movies per page), in rank order."""
+    results = []
+    for page in range(1, MAX_PAGES + 1):
+        data = tmdb_get(path, page=page, **params)
+        results.extend(data["results"])
+        if page >= data.get("total_pages", 1):
+            break
+    return results
+
+
 def get_todays_lists():
     """Today's trending and now-playing lists, one row per movie per list."""
     lists = {
-        "trending": tmdb_get("/trending/movie/day")["results"],
-        "now_playing": tmdb_get("/movie/now_playing", region="US")["results"],
+        "trending": get_list("/trending/movie/day"),
+        "now_playing": get_list("/movie/now_playing", region="US"),
     }
     rows = []
     for list_type, movies in lists.items():
@@ -155,6 +179,8 @@ def get_todays_lists():
                 "vote_count": movie.get("vote_count"),
             })
     snapshots = pd.DataFrame(rows)
+    # A movie can show up on two pages if the list shifts while we page through it.
+    snapshots = snapshots.drop_duplicates(subset=["list_type", "tmdb_id"], keep="first")
     print(f"snapshots: {len(snapshots)} rows ({snapshots['tmdb_id'].nunique()} unique movies) for {TODAY}")
     return snapshots
 
@@ -199,35 +225,111 @@ def load_snapshots(cursor, snapshots):
     )
 
 
-def load_omdb_ratings(cursor, conn):
-    """Get OMDb ratings for every movie that has an IMDb ID but no ratings row yet."""
-    todo = pd.read_sql(
-        """SELECT imdb_id FROM movies
-           WHERE imdb_id IS NOT NULL
-             AND imdb_id NOT IN (SELECT imdb_id FROM omdb_ratings)""",
-        conn,
-    )["imdb_id"]
-    print(f"omdb_ratings: looking up {len(todo)} movies")
+def omdb_calls_used_today(conn):
+    """Every OMDb call sets fetched_on = today on one row, so this counts today's calls across runs."""
+    return conn.execute("SELECT COUNT(*) FROM omdb_ratings WHERE fetched_on = ?", (TODAY,)).fetchone()[0]
 
-    for imdb_id in todo:
-        o = omdb_get(imdb_id) or {}   # {} = OMDb doesn't have it; we still save a row so we don't ask again
-        ratings = {r["Source"]: r["Value"] for r in o.get("Ratings", [])}
-        cursor.execute(
-            """INSERT OR IGNORE INTO omdb_ratings
-               (imdb_id, imdb_rating, imdb_votes, rotten_tomatoes_pct, metascore, box_office_usd, rated, awards, fetched_on)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                imdb_id,
-                to_number(o.get("imdbRating")),
-                to_number(o.get("imdbVotes"), int),
-                to_number(ratings.get("Rotten Tomatoes"), int),
-                to_number(o.get("Metascore"), int),
-                to_number(o.get("BoxOffice"), int),
-                None if o.get("Rated") in (None, "N/A") else o.get("Rated"),
-                None if o.get("Awards") in (None, "N/A") else o.get("Awards"),
-                TODAY,
-            ),
+
+def omdb_todo(conn):
+    """
+    Movies to ask OMDb about, most important first:
+      1. new movies that have never been looked up (best rank today first)
+      2. old lookups worth refreshing: still missing a score, or still on today's lists
+         (ratings and vote counts keep changing), oldest lookup first
+    """
+    refresh_cutoff = (date.fromisoformat(TODAY) - timedelta(days=REFRESH_AFTER_DAYS)).isoformat()
+    return pd.read_sql(
+        """
+        WITH best_rank AS (
+            SELECT tmdb_id, MIN(rank) AS best_rank
+            FROM daily_snapshots
+            WHERE snapshot_date = :today
+            GROUP BY tmdb_id
         )
+        SELECT m.imdb_id,
+               CASE WHEN o.imdb_id IS NULL THEN 'new' ELSE 'refresh' END AS reason
+        FROM movies m
+        LEFT JOIN omdb_ratings o ON m.imdb_id = o.imdb_id
+        LEFT JOIN best_rank b    ON m.tmdb_id = b.tmdb_id
+        WHERE m.imdb_id IS NOT NULL
+          AND (
+                o.imdb_id IS NULL
+             OR (o.fetched_on <= :cutoff
+                 AND (o.imdb_rating IS NULL
+                      OR o.rotten_tomatoes_pct IS NULL
+                      OR b.tmdb_id IS NOT NULL))
+          )
+        ORDER BY
+            CASE WHEN o.imdb_id IS NULL THEN 0 ELSE 1 END,   -- new movies first
+            COALESCE(b.best_rank, 9999),                     -- then by today's rank
+            o.fetched_on                                     -- then oldest lookups
+        """,
+        conn,
+        params={"today": TODAY, "cutoff": refresh_cutoff},
+    )
+
+
+def save_omdb_row(cursor, imdb_id, o):
+    """
+    Insert or update one movie's ratings.
+    COALESCE keeps an old value when OMDb now returns nothing for it,
+    so a refresh can fill in blanks but never erase data we already had.
+    """
+    ratings = {r["Source"]: r["Value"] for r in o.get("Ratings", [])}
+    cursor.execute(
+        """INSERT INTO omdb_ratings
+           (imdb_id, imdb_rating, imdb_votes, rotten_tomatoes_pct, metascore, box_office_usd, rated, awards, fetched_on)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (imdb_id) DO UPDATE SET
+               imdb_rating         = COALESCE(excluded.imdb_rating,         omdb_ratings.imdb_rating),
+               imdb_votes          = COALESCE(excluded.imdb_votes,          omdb_ratings.imdb_votes),
+               rotten_tomatoes_pct = COALESCE(excluded.rotten_tomatoes_pct, omdb_ratings.rotten_tomatoes_pct),
+               metascore           = COALESCE(excluded.metascore,           omdb_ratings.metascore),
+               box_office_usd      = COALESCE(excluded.box_office_usd,      omdb_ratings.box_office_usd),
+               rated               = COALESCE(excluded.rated,               omdb_ratings.rated),
+               awards              = COALESCE(excluded.awards,              omdb_ratings.awards),
+               fetched_on          = excluded.fetched_on""",
+        (
+            imdb_id,
+            to_number(o.get("imdbRating")),
+            to_number(o.get("imdbVotes"), int),
+            to_number(ratings.get("Rotten Tomatoes"), int),
+            to_number(o.get("Metascore"), int),
+            to_number(o.get("BoxOffice"), int),
+            None if o.get("Rated") in (None, "N/A") else o.get("Rated"),
+            None if o.get("Awards") in (None, "N/A") else o.get("Awards"),
+            TODAY,
+        ),
+    )
+
+
+def load_omdb_ratings(cursor, conn):
+    """Use up to OMDB_DAILY_BUDGET OMDb calls today: new movies first, then refreshes."""
+    used = omdb_calls_used_today(conn)
+    remaining = max(OMDB_DAILY_BUDGET - used, 0)
+    todo = omdb_todo(conn)
+    batch = todo.head(remaining)
+
+    n_new = (todo["reason"] == "new").sum()
+    n_refresh = (todo["reason"] == "refresh").sum()
+    print(f"omdb_ratings: {used} calls already used today, {remaining} left of {OMDB_DAILY_BUDGET}")
+    print(f"omdb_ratings: {n_new} new + {n_refresh} to refresh waiting, doing {len(batch)} now")
+
+    done = 0
+    try:
+        for imdb_id in batch["imdb_id"]:
+            o = omdb_get(imdb_id) or {}   # {} = OMDb doesn't have it; we still save a row so we don't ask again today
+            save_omdb_row(cursor, imdb_id, o)
+            done += 1
+            if done % 50 == 0:
+                conn.commit()             # save progress in case something stops the run
+    except OmdbLimitReached as e:
+        print(f"omdb_ratings: stopped after {done} calls. {e}")
+    conn.commit()
+
+    left_over = len(todo) - done
+    if left_over:
+        print(f"omdb_ratings: {left_over} left for tomorrow")
 
 
 def print_summary(conn):
@@ -235,6 +337,7 @@ def print_summary(conn):
     for table in ["genres", "movies", "movie_genres", "daily_snapshots", "omdb_ratings"]:
         count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         print(f"  {table:<16}{count:>6}")
+    print(f"\nOMDb calls used today: {omdb_calls_used_today(conn)} of {OMDB_DAILY_BUDGET}")
 
     print("\nToday's top 5 trending:")
     print(pd.read_sql(
@@ -265,7 +368,6 @@ def main():
     conn.commit()
 
     load_omdb_ratings(cursor, conn)
-    conn.commit()
 
     print_summary(conn)
     conn.close()
