@@ -106,7 +106,7 @@ Run all cells. The first cell checks that both keys loaded. The rest show today'
 
 ## Known issues
 
-- **Rotten Tomatoes scores:** since 2026-11-23, OMDb returns no Rotten Tomatoes score for some keys, even for well-known movies (the `tomatoes=true` option returns `N/A` too). IMDb and Metacritic still come through. Movies looked up earlier keep their scores.
+- **Rotten Tomatoes scores:** since 2026-11-23, OMDb no longer returns Rotten Tomatoes scores, even for well-known movies (confirmed on two keys on 2026-11-23 and 2026-11-24, including one that returned them on 2026-11-22; `tomatoes=true` returns `N/A` too). IMDb and Metacritic still come through. Movies looked up earlier keep their scores. For critic vs. audience comparisons, use Metascore vs. IMDb rating.
 
 ## Repo layout
 
