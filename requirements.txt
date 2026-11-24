@@ -1,0 +1,4 @@
+# For running the scripts on your own machine (outside Docker)
+requests
+pandas
+python-dotenv
