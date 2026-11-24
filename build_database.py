@@ -12,8 +12,8 @@ Safe to run every day (or several times a day):
   - pulls several pages of each list (20 movies per page), not just the first
   - TMDb details are only looked up for movies not already in the database
   - OMDb is capped at OMDB_DAILY_BUDGET calls per day, counted across all runs that day
-  - leftover OMDb calls are used to refresh old ratings (e.g. new releases that
-    had no Rotten Tomatoes score yet when we first looked them up)
+  - leftover OMDb calls are used to refresh old ratings (movies still missing an
+    IMDb rating, or still on today's lists, since their ratings keep changing)
   - running twice on the same day does not create duplicates
 """
 
@@ -234,8 +234,10 @@ def omdb_todo(conn):
     """
     Movies to ask OMDb about, most important first:
       1. new movies that have never been looked up (best rank today first)
-      2. old lookups worth refreshing: still missing a score, or still on today's lists
-         (ratings and vote counts keep changing), oldest lookup first
+      2. old lookups worth refreshing: still missing an IMDb rating, or still on today's
+         lists (ratings and vote counts keep changing), oldest lookup first.
+         A missing Rotten Tomatoes score is not a reason to refresh: OMDb stopped
+         returning it, so that would re-check every movie every week.
     """
     refresh_cutoff = (date.fromisoformat(TODAY) - timedelta(days=REFRESH_AFTER_DAYS)).isoformat()
     return pd.read_sql(
@@ -256,7 +258,6 @@ def omdb_todo(conn):
                 o.imdb_id IS NULL
              OR (o.fetched_on <= :cutoff
                  AND (o.imdb_rating IS NULL
-                      OR o.rotten_tomatoes_pct IS NULL
                       OR b.tmdb_id IS NOT NULL))
           )
         ORDER BY
