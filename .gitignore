@@ -225,3 +225,4 @@ __marimo__/
 
 # Airflow
 airflow/logs/
+.vscode/settings.json
