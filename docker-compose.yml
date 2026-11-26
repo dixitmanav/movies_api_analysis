@@ -31,6 +31,7 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: "False"
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "False"
       AIRFLOW__CORE__DEFAULT_TIMEZONE: America/Chicago
+      TZ: America/Chicago   # so date.today() in our scripts uses Chicago time, not UTC
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/logs:/opt/airflow/logs

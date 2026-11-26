@@ -59,7 +59,7 @@ OMDB_API_KEYS=key1,key2,key3
 ### 4. Install the packages
 
 ```bash
-pip install pandas requests python-dotenv jupyter
+pip install -r requirements.txt jupyter
 ```
 
 ### 5. Build the database
@@ -146,6 +146,8 @@ docker compose up --build      # first time takes a few minutes
 ```
 
 Open http://localhost:8080 (user `admin`, password `admin`), click a DAG, and press the ▶ (Trigger) button. Stop Airflow with `docker compose down`.
+
+Trigger one DAG at a time and wait for it to finish before starting another. Both write to `movies.db`, and SQLite only allows one writer at a time.
 
 **What each step does**
 - `check_keys` fails right away if an API key is missing from `.env`.

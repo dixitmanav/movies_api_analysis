@@ -1,4 +1,5 @@
-# For running the scripts on your own machine (outside Docker)
-requests
-pandas
-python-dotenv
+# For running the scripts on your own machine (outside Docker).
+# Same pinned versions as airflow/requirements.txt
+requests==2.31.0
+pandas==2.1.4
+python-dotenv==1.0.1
