@@ -59,7 +59,7 @@ OMDB_API_KEYS=key1,key2,key3
 ### 4. Install the packages
 
 ```bash
-pip install pandas requests python-dotenv jupyter
+pip install -r requirements.txt jupyter
 ```
 
 ### 5. Build the database
@@ -129,3 +129,34 @@ movies_api_analysis/
 - Ayush Tharval
 - Mehwish Ahmed
 - Reeja Kurian
+
+## Run the pipeline with Airflow
+
+Airflow runs the same scripts in order, checks the data, and logs every run. Both DAGs run **only when you trigger them**, so nothing calls the APIs unless you click the button. You can still run the scripts by hand like before.
+
+| DAG | What it does |
+|---|---|
+| `movies_pipeline` | check_keys → build_database → clean_snapshots → quality_checks → log_run |
+| `movies_backfill` | check_keys → backfill_movies → clean_snapshots → quality_checks → log_run |
+
+**Setup (once):** install Docker Desktop and make sure your `.env` has your keys (see `.env.example`).
+
+```bash
+docker compose up --build      # first time takes a few minutes
+```
+
+Open http://localhost:8080 (user `admin`, password `admin`), click a DAG, and press the ▶ (Trigger) button. Stop Airflow with `docker compose down`.
+
+Trigger one DAG at a time and wait for it to finish before starting another. Both write to `movies.db`, and SQLite only allows one writer at a time.
+
+**What each step does**
+- `check_keys` fails right away if an API key is missing from `.env`.
+- `quality_checks.py` checks the tables exist, nothing is corrupted, IDs link up, ratings are between 0 and 10, today's snapshot exists, and the movie count never drops. Any failure turns the run red.
+- `log_run.py` writes one row per run to the `pipeline_runs` table (start and end time, duration, row counts, what was added, which tasks failed). It runs even when an earlier step fails.
+
+```sql
+SELECT dag_id, status, duration_sec, new_movies, new_snapshots, new_omdb_ratings
+FROM pipeline_runs ORDER BY finished_at DESC;
+```
+
+To run the daily pull automatically, set `SCHEDULE = "0 9 * * *"` in `airflow/dags/movies_pipeline.py`.

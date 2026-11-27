@@ -222,3 +222,7 @@ __marimo__/
 # project files
 *.db
 .DS_Store
+
+# Airflow
+airflow/logs/
+.vscode/settings.json
