@@ -19,7 +19,7 @@ def run_script(script, *args):
     return f"cd {PROJECT_DIR} && python {script} {' '.join(args)}".strip()
 
 
-def check_keys(need_omdb_list=False):
+def check_keys():
     """Fail right away, with a clear message, if the API keys are missing from .env."""
     from dotenv import load_dotenv
 
@@ -27,8 +27,8 @@ def check_keys(need_omdb_list=False):
     missing = []
     if not os.getenv("TMDB_API_KEY"):
         missing.append("TMDB_API_KEY")
-    if not (os.getenv("OMDB_API_KEY") or (need_omdb_list and os.getenv("OMDB_API_KEYS"))):
-        missing.append("OMDB_API_KEY" + (" or OMDB_API_KEYS" if need_omdb_list else ""))
+    if not os.getenv("OMDB_API_KEY"):
+        missing.append("OMDB_API_KEY")
     if missing:
         raise AirflowException(f"Missing in .env: {', '.join(missing)}. Copy .env.example to .env and add your keys.")
     print("API keys found.")

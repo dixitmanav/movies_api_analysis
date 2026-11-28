@@ -1,24 +1,33 @@
 """
 build_database.py
 
-Pulls today's trending and now-playing movies from TMDb, adds ratings from OMDb,
-and saves everything to a SQLite database (movies.db).
+Builds and updates movies.db (SQLite) from TMDb and OMDb. Each run:
+  1. TMDb: today's trending and now-playing lists (top 100 each) -> daily_snapshots
+  2. TMDb: the most-voted movies of every year from START_YEAR to END_YEAR (history)
+  3. TMDb: details (IMDb ID, budget, revenue, runtime, genres) for movies not saved yet
+  4. OMDb: IMDb rating/votes, Metascore, box office, up to 1,000 calls a day
 
-Run it from the repo folder:
+Run it from the repo folder, once a day:
     python build_database.py
+    python build_database.py --skip-history    # only today's lists + OMDb (faster)
+
+With one TMDb key and one OMDb key, the first run takes about 30 minutes and saves
+all ~5,900 movies; OMDb then rates about 1,000 movies per daily run, so it takes
+about 6 daily runs to fill in every rating.
 
 Safe to run every day (or several times a day):
-  - each run adds a new dated snapshot of the trending / now-playing lists
-  - pulls several pages of each list (20 movies per page), not just the first
-  - TMDb details are only looked up for movies not already in the database
-  - OMDb is capped at OMDB_DAILY_BUDGET calls per day, counted across all runs that day
-  - leftover OMDb calls are used to refresh old ratings (movies still missing an
-    IMDb rating, or still on today's lists, since their ratings keep changing)
+  - movies already saved are skipped (no repeat TMDb or OMDb calls)
+  - OMDb is capped at OMDB_DAILY_BUDGET calls per day, counted across all runs that day;
+    today's list movies go first, then the rest in random order
+  - leftover OMDb calls refresh old ratings (movies still missing an IMDb rating,
+    or still on today's lists, since their ratings keep changing)
+  - progress is saved as it goes, so a stopped run picks up where it left off
   - running twice on the same day does not create duplicates
 """
 
 import os
 import sqlite3
+import sys
 from datetime import date, timedelta
 
 import pandas as pd
@@ -40,6 +49,12 @@ TODAY = date.today().isoformat()
 MAX_PAGES = 5               # pages per TMDb list; 20 movies per page, so top 100
 OMDB_DAILY_BUDGET = 1000    # OMDb free key allows 1,000 a day
 REFRESH_AFTER_DAYS = 7      # re-check a movie's OMDb ratings once they're this many days old
+
+# history: the top MOVIES_PER_YEAR movies of each year by vote count
+START_YEAR = 1980
+END_YEAR = 2025
+MOVIES_PER_YEAR = 125       # 46 years x 125 = about 5,750 movies
+MIN_VOTES = 100             # skip obscure movies (unlikely to have ratings, budget or box office)
 
 
 # ---------------------------------------------------------------- tables
@@ -185,11 +200,10 @@ def get_todays_lists():
     return snapshots
 
 
-def load_new_movies(cursor, conn, snapshots):
-    """Look up details only for movies not already in the movies table."""
+def load_movie_details(cursor, conn, tmdb_ids):
+    """Look up TMDb details for the IDs not already in the movies table. Returns how many were new."""
     existing = set(pd.read_sql("SELECT tmdb_id FROM movies", conn)["tmdb_id"])
-    new_ids = [i for i in snapshots["tmdb_id"].unique() if i not in existing]
-    print(f"movies: {len(new_ids)} new, {len(existing)} already in the database")
+    new_ids = [i for i in dict.fromkeys(tmdb_ids) if i not in existing]
 
     for tmdb_id in new_ids:
         d = tmdb_get(f"/movie/{tmdb_id}")
@@ -213,6 +227,51 @@ def load_new_movies(cursor, conn, snapshots):
             "INSERT OR IGNORE INTO movie_genres (tmdb_id, genre_id) VALUES (?, ?)",
             [(d["id"], g["id"]) for g in d.get("genres", [])],
         )
+    return len(new_ids)
+
+
+def load_new_movies(cursor, conn, snapshots):
+    """Save details for movies on today's lists that aren't in the database yet."""
+    n_before = conn.execute("SELECT COUNT(*) FROM movies").fetchone()[0]
+    n_new = load_movie_details(cursor, conn, snapshots["tmdb_id"].tolist())
+    print(f"movies: {n_new} new from today's lists, {n_before} already in the database")
+
+
+def discover_year(year):
+    """TMDb IDs of the top MOVIES_PER_YEAR movies released in `year`, most-voted first."""
+    ids = []
+    page = 1
+    while len(ids) < MOVIES_PER_YEAR:
+        data = tmdb_get(
+            "/discover/movie",
+            primary_release_year=year,
+            sort_by="vote_count.desc",
+            include_adult=False,
+            page=page,
+            **{"vote_count.gte": MIN_VOTES},   # dotted parameter name, so it's passed via a dict
+        )
+        ids.extend(m["id"] for m in data["results"])
+        if page >= data.get("total_pages", 1):
+            break
+        page += 1
+    return ids[:MOVIES_PER_YEAR]
+
+
+def load_history(cursor, conn):
+    """
+    Save the most-voted movies of each year. TMDb has no daily limit, so the first
+    run saves every year (about 30 minutes); later runs only add movies that have
+    newly made a year's top list (about a minute).
+    """
+    print(f"history: checking {START_YEAR}-{END_YEAR}, top {MOVIES_PER_YEAR} per year")
+    total_new = 0
+    for year in range(START_YEAR, END_YEAR + 1):
+        n_new = load_movie_details(cursor, conn, discover_year(year))
+        conn.commit()        # save each finished year
+        if n_new:
+            print(f"  {year}: {n_new} new")
+        total_new += n_new
+    print(f"history: {total_new} new movies")
 
 
 def load_snapshots(cursor, snapshots):
@@ -233,7 +292,8 @@ def omdb_calls_used_today(conn):
 def omdb_todo(conn):
     """
     Movies to ask OMDb about, most important first:
-      1. new movies that have never been looked up (best rank today first)
+      1. new movies that have never been looked up: today's list movies first (by rank),
+         then everything else in random order
       2. old lookups worth refreshing: still missing an IMDb rating, or still on today's
          lists (ratings and vote counts keep changing), oldest lookup first.
          A missing Rotten Tomatoes score is not a reason to refresh: OMDb stopped
@@ -262,8 +322,10 @@ def omdb_todo(conn):
           )
         ORDER BY
             CASE WHEN o.imdb_id IS NULL THEN 0 ELSE 1 END,   -- new movies first
-            COALESCE(b.best_rank, 9999),                     -- then by today's rank
-            o.fetched_on                                     -- then oldest lookups
+            COALESCE(b.best_rank, 9999),                     -- today's list movies by rank
+            o.fetched_on,                                    -- refreshes: oldest lookup first
+            RANDOM()                                         -- the rest in random order, so gaps
+                                                             -- are spread across all years
         """,
         conn,
         params={"today": TODAY, "cutoff": refresh_cutoff},
@@ -333,6 +395,24 @@ def load_omdb_ratings(cursor, conn):
         print(f"omdb_ratings: {left_over} left for tomorrow")
 
 
+def coverage_report(conn):
+    """Movies per decade and the % that have each rating / money column."""
+    return pd.read_sql(
+        """SELECT (CAST(substr(m.release_date, 1, 4) AS INTEGER) / 10) * 10 AS decade,
+                  COUNT(*)                                              AS movies,
+                  ROUND(100.0 * AVG(o.imdb_id IS NOT NULL))             AS pct_omdb_checked,
+                  ROUND(100.0 * AVG(o.imdb_rating IS NOT NULL))         AS pct_imdb,
+                  ROUND(100.0 * AVG(o.metascore IS NOT NULL))           AS pct_metascore,
+                  ROUND(100.0 * AVG(m.budget_usd IS NOT NULL))          AS pct_budget,
+                  ROUND(100.0 * AVG(m.revenue_usd IS NOT NULL))         AS pct_revenue
+           FROM movies m
+           LEFT JOIN omdb_ratings o ON m.imdb_id = o.imdb_id
+           GROUP BY decade
+           ORDER BY decade""",
+        conn,
+    )
+
+
 def print_summary(conn):
     print("\nRows per table:")
     for table in ["genres", "movies", "movie_genres", "daily_snapshots", "omdb_ratings"]:
@@ -340,9 +420,12 @@ def print_summary(conn):
         print(f"  {table:<16}{count:>6}")
     print(f"\nOMDb calls used today: {omdb_calls_used_today(conn)} of {OMDB_DAILY_BUDGET}")
 
+    print("\nCoverage by decade (% of movies):")
+    print(coverage_report(conn).to_string(index=False))
+
     print("\nToday's top 5 trending:")
     print(pd.read_sql(
-        """SELECT s.rank, m.title, s.popularity, o.imdb_rating, o.rotten_tomatoes_pct
+        """SELECT s.rank, m.title, s.popularity, o.imdb_rating, o.metascore
            FROM daily_snapshots s
            JOIN movies m ON s.tmdb_id = m.tmdb_id
            LEFT JOIN omdb_ratings o ON m.imdb_id = o.imdb_id
@@ -353,7 +436,7 @@ def print_summary(conn):
     ).to_string(index=False))
 
 
-def main():
+def main(skip_history=False):
     if not TMDB_API_KEY or not OMDB_API_KEY:
         raise SystemExit("Missing API keys. Copy .env.example to .env and paste in both keys.")
 
@@ -368,6 +451,9 @@ def main():
     load_snapshots(cursor, snapshots)
     conn.commit()
 
+    if not skip_history:
+        load_history(cursor, conn)
+
     load_omdb_ratings(cursor, conn)
 
     print_summary(conn)
@@ -376,4 +462,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(skip_history="--skip-history" in sys.argv)

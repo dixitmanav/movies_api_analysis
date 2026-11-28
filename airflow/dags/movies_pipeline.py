@@ -1,5 +1,6 @@
 """
-movies_pipeline: pulls today's trending and now-playing movies into movies.db.
+movies_pipeline: builds and updates movies.db (today's trending and now-playing lists,
+the most-voted movies of 1980-2025, and OMDb ratings).
 
     check_keys -> build_database -> clean_snapshots -> quality_checks -> log_run
 
@@ -21,7 +22,7 @@ SCHEDULE = None   # None = only when triggered in the Airflow UI
 
 with DAG(
     dag_id="movies_pipeline",
-    description="Daily TMDb trending/now-playing pull + OMDb ratings into movies.db",
+    description="TMDb lists + 1980-2025 history + OMDb ratings into movies.db",
     schedule=SCHEDULE,
     start_date=pendulum.datetime(2026, 11, 1, tz="America/Chicago"),
     catchup=False,
@@ -39,8 +40,9 @@ with DAG(
     build = BashOperator(
         task_id="build_database",
         bash_command=run_script("build_database.py"),
-        retries=1,                          # safe to rerun: no duplicates
+        retries=1,                          # safe to rerun: no duplicates, picks up where it stopped
         retry_delay=timedelta(minutes=5),
+        execution_timeout=timedelta(hours=2),   # the first run takes ~30 min
     )
 
     clean = BashOperator(

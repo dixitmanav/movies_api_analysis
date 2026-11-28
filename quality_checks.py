@@ -5,9 +5,8 @@ Checks movies.db after the pipeline runs. Prints a pass/fail line for each check
 and exits with an error if any check fails, so the Airflow task (and the DAG run)
 turns red instead of quietly keeping bad data.
 
-Run it from the repo folder:
-    python quality_checks.py              # after build_database.py (expects today's snapshot)
-    python quality_checks.py --no-today   # after backfill_movies.py (no snapshot needed)
+Run it from the repo folder, after build_database.py:
+    python quality_checks.py
 """
 
 import sqlite3
@@ -83,9 +82,8 @@ def run_checks(conn, check_today=True):
 
 
 def main():
-    check_today = "--no-today" not in sys.argv
     conn = sqlite3.connect(DB_PATH)
-    results = run_checks(conn, check_today)
+    results = run_checks(conn)
     conn.close()
 
     print("Data quality checks")
