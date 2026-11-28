@@ -27,8 +27,9 @@ Cleaning decisions (from the data quality pass, Week 7 steps):
     - US box office more than 1.1x worldwide revenue is impossible, so revenue becomes blank.
     - revenue_is_us_only flags films whose "worldwide" revenue is really the US total
       (US box office is at least 99% of it). Common before 2000. us_share is left blank for them.
-    - MPAA ratings are grouped into G, PG, PG-13, R, NC-17 (X was renamed NC-17),
-      Not Rated (incl. Unrated) and Other (TV / streaming ratings).
+    - MPAA ratings are grouped the same way as omdb_ratings_clean (clean_omdb.py):
+      G, PG, PG-13, R, NC-17, Not Rated (incl. Unrated), TV (TV-MA, TV-14, ...),
+      Other (rare ones like X, Passed, 16+) and Unknown (no rating).
 
   Flags (rows are kept; the EDA filters on them)
     - in_history: released 1980-2025, the even 125-movies-per-year sample.
@@ -54,11 +55,8 @@ US_ONLY_SHARE = 0.99           # US box office >= 99% of worldwide = revenue is 
 MIN_FEATURE_MINUTES = 40       # shorter = short film
 HISTORY_YEARS = (1980, 2025)   # years covered by the historical sample
 
-RATING_GROUPS = {
-    "G": "G", "PG": "PG", "PG-13": "PG-13", "R": "R",
-    "NC-17": "NC-17", "X": "NC-17",
-    "Not Rated": "Not Rated", "Unrated": "Not Rated",
-}   # anything else that isn't blank (TV-MA, TV-14, E10+, Passed, ...) becomes "Other"
+MPAA_RATINGS = ["G", "PG", "PG-13", "R", "NC-17"]
+NOT_RATED = ["Not Rated", "Unrated"]
 
 LOAD_QUERY = """
 SELECT
@@ -119,8 +117,12 @@ def add_derived_columns(df):
     real_world = df["revenue_usd"].where(~df["revenue_is_us_only"])
     df["us_share"] = df["box_office_usd"] / real_world  # share of worldwide revenue from the US
 
-    df["rating_group"] = df["rated"].map(RATING_GROUPS)
-    df.loc[df["rated"].notna() & df["rating_group"].isna(), "rating_group"] = "Other"   # blank stays blank
+    df["rating_group"] = np.select(
+        [df["rated"].isna(), df["rated"].isin(MPAA_RATINGS), df["rated"].isin(NOT_RATED),
+         df["rated"].str.startswith("TV-", na=False)],
+        ["Unknown", df["rated"], "Not Rated", "TV"],
+        default="Other",
+    )   # same groups as omdb_ratings_clean
 
     # OMDb awards text, e.g. "Won 2 Oscars. 126 wins & 375 nominations total". Blank = no awards.
     awards = df["awards"].fillna("")

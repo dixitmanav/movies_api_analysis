@@ -97,7 +97,7 @@ One row per movie (about 6,000), combining `movies`, `omdb_ratings` and genres, 
 | --- | --- |
 | `year`, `decade` | from the release date |
 | `genres` | all of a movie's genres in one text column, e.g. `Drama, Crime` |
-| `rating_group` | MPAA rating grouped into G, PG, PG-13, R, NC-17, Not Rated, Other (TV / streaming ratings) |
+| `rating_group` | MPAA rating grouped into G, PG, PG-13, R, NC-17, Not Rated, TV, Other, Unknown (same groups as `omdb_ratings_clean`) |
 | `roi` | worldwide revenue / budget (2.0 = earned twice its budget) |
 | `us_share` | US box office / worldwide revenue (blank when the revenue figure is US-only) |
 | `oscar_wins`, `award_wins`, `award_nominations` | counts from OMDb's awards text (no awards listed = 0) |
