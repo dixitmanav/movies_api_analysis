@@ -1,11 +1,12 @@
 """
 clean_movie_genre.py
 
-Cleans the movies and movie_genres tables.
+Cleans the movies, genres and movie_genres tables.
 
-Run it after build_database.py (run it again after each new build,
+Run it after build_database.py and clean_snapshots.py (run it again after each new build,
 since new movies arrive without titles in movie_genres):
     python build_database.py
+    python clean_snapshots.py
     python clean_movie_genre.py
 """
 
@@ -13,7 +14,6 @@ import sqlite3
 import pandas as pd
 
 DB_PATH = "movies.db"
-
 
 def add_column(conn, table, column, col_type):
 
@@ -60,7 +60,9 @@ def clean_movie_genres(conn):
 
 
 def fill_movie_genres(conn):
+
     """Add movie names as title and genre names to movie_genres table."""
+
     add_column(conn, "movie_genres", "title", "TEXT")
     add_column(conn, "movie_genres", "genre_name", "TEXT")
     conn.execute("""
@@ -88,24 +90,69 @@ def fill_movies(conn):
         )
     """)
 
+def fill_genres(conn):
+
+    """Movie counts and trending counts for each genre.
+    
+    Movie counts is added as movie_countso that its easy to understand how many mvoies fall under each genre.
+    Trending movie counts is added as trending_movie_count so that the numbe rof trending movie under 
+     a genre can be calculated. 
+     """
+    
+    add_column(conn, "genres", "movie_count", "INTEGER")
+    add_column(conn, "genres", "trending_movie_count", "INTEGER")
+
+    conn.execute("""
+        UPDATE genres
+        SET movie_count = (
+                SELECT COUNT(*) FROM movie_genres mg
+                WHERE mg.genre_id = genres.genre_id),
+
+            -- trending data comes from daily_snapshots_clean (made by clean_snapshots.py)
+            trending_movie_count = (
+                SELECT COUNT(DISTINCT mg.tmdb_id)
+                FROM movie_genres mg
+                JOIN daily_snapshots_clean s ON s.tmdb_id = mg.tmdb_id
+                WHERE mg.genre_id = genres.genre_id
+                  AND s.trend_status IN ('trending_released', 'trending_unreleased'))
+    """)
+
 
 def main():
     conn = sqlite3.connect(DB_PATH)
 
-    clean_movie_genres(conn)  
-    fill_movie_genres(conn)   
-    fill_movies(conn)         
+    # fill_genres() reads daily_snapshots_clean, which clean_snapshots.py creates.
+    # Stop early with if it's missing (sqlite_master lists all tables).
+    has_clean = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'daily_snapshots_clean'"
+    ).fetchone()
+    if not has_clean:
+        raise SystemExit("daily_snapshots_clean not found. Run clean_snapshots.py first.")
+
+    clean_movie_genres(conn)   # Delete broken rows 
+    fill_movie_genres(conn)    # Fill title and genre_name to move_genre
+    fill_movies(conn)          # Add each movie's genres to movies
+    fill_genres(conn)          # Add movie_count and trending_movie_count to genre
     conn.commit()
 
-    # Check: first 5 rows of movie_genres with the new columns
+    # CHECK: first 5 rows of movie_genres with the new columns
     print("\nSample of movie_genres:")
     print(pd.read_sql(
         "SELECT tmdb_id, genre_id, title, genre_name FROM movie_genres LIMIT 5", conn
     ).to_string(index=False))
 
-    # Check: first 5 movies with their genres text
+    # CHECK: first 5 movies with their genres text
     print("\nSample of movies:")
     print(pd.read_sql("SELECT tmdb_id, title, genres FROM movies LIMIT 5", conn).to_string(index=False))
+
+
+    print("\nGenres ranked by trending movies:")
+    print(pd.read_sql("""
+        SELECT name, movie_count, trending_movie_count
+        FROM genres
+        WHERE movie_count > 0
+        ORDER BY trending_movie_count DESC, movie_count DESC
+    """, conn).to_string(index=False))
 
     conn.close()
 
