@@ -77,15 +77,50 @@ Each run does four things:
 3. **Movie details** from TMDb for any movie not saved yet.
 4. **OMDb ratings,** up to 1,000 calls a day (the free limit): today's list movies first, then the rest in random order so gaps are spread across all years. Leftover calls refresh old ratings.
 
-Then run `clean_snapshots.py` to rebuild the `daily_snapshots_clean` table:
+Then run the two cleaning scripts:
 
 ```bash
 python clean_snapshots.py
+python clean_movies.py
 ```
 
-Run both once a day. Each run only looks up movies it hasn't seen before, saves progress as it goes, and doesn't duplicate anything if run twice in one day. `movies.db` is in `.gitignore`, so each user builds their own. For a quick run that skips the history step, use `python build_database.py --skip-history`.
+- `clean_snapshots.py` rebuilds `daily_snapshots_clean` from `daily_snapshots`.
+- `clean_movies.py` rebuilds `movies_clean`, the table to use for analysis (see below).
 
-### 6. How long it takes to fill the database
+Run all three once a day. Each run only looks up movies it hasn't seen before, saves progress as it goes, and doesn't duplicate anything if run twice in one day. `movies.db` is in `.gitignore`, so each user builds their own. For a quick run that skips the history step, use `python build_database.py --skip-history`.
+
+### 6. The `movies_clean` table
+
+One row per movie (about 6,000), combining `movies`, `omdb_ratings` and genres, with invalid values removed and extra columns for analysis. The raw tables are not changed.
+
+| Column | What it is |
+| --- | --- |
+| `year`, `decade` | from the release date |
+| `genres` | all of a movie's genres in one text column, e.g. `Drama, Crime` |
+| `rating_group` | MPAA rating grouped into G, PG, PG-13, R, NC-17, Not Rated, TV, Other, Unknown (same groups as `omdb_ratings_clean`) |
+| `roi` | worldwide revenue / budget (2.0 = earned twice its budget) |
+| `us_share` | US box office / worldwide revenue (blank when the revenue figure is US-only) |
+| `oscar_wins`, `award_wins`, `award_nominations` | counts from OMDb's awards text (no awards listed = 0) |
+| `in_history` | 1 if released 1980-2025: the even 125-movies-per-year sample. Use this for analysis over time. |
+| `is_short` | 1 if under 40 minutes (short films, not features) |
+| `revenue_is_us_only` | 1 if the "worldwide" revenue is really the US total (US box office is at least 99% of it). Common before 2000. |
+| `on_daily_lists` | 1 if the movie appeared on a trending or now-playing list |
+
+The flags are stored as 1 / 0 (SQLite has no True / False). For most analysis, start from:
+
+```sql
+SELECT * FROM movies_clean WHERE in_history = 1 AND is_short = 0;
+```
+
+**Cleaning decisions** (details in the `clean_movies.py` docstring):
+
+- Invalid values become blank: budgets or revenues under $1,000 (placeholders), revenue under 0.1% of budget (streaming / TV films whose box office wasn't tracked), and revenue lower than US box office (impossible, since worldwide includes the US).
+- Missing ratings and money are left blank, not filled in. They're mostly missing for less-known and non-English films, so filling them in would invent data.
+- Rotten Tomatoes is dropped (99% blank, see Known issues). Use Metascore for critic scores.
+- Outliers are real films and are kept. Chart budget, revenue and `roi` on log scales and use medians, since a few films (e.g. a $15,000 film earning $194M) are extreme.
+- Money is in nominal US dollars (not adjusted for inflation). Data was collected Nov 22-27, 2026.
+
+### 7. How long it takes to fill the database
 
 With one TMDb key and one OMDb key:
 
@@ -106,6 +141,7 @@ After about 6 daily runs, every movie has been checked on OMDb. Two things won't
 movies_api_analysis/
 ├── build_database.py    # pulls both APIs into movies.db (today's lists + 1980-2025 history)
 ├── clean_snapshots.py   # builds daily_snapshots_clean from daily_snapshots
+├── clean_movies.py      # builds movies_clean (one cleaned row per movie) for analysis
 ├── quality_checks.py    # data checks, run after build_database.py
 ├── log_run.py           # logs each run to the pipeline_runs table
 ├── eda.ipynb            # exploratory analysis
@@ -143,7 +179,7 @@ docker compose up --build      # first time takes a few minutes
 
 Open http://localhost:8080 (user `admin`, password `admin`), click `movies_pipeline`, and press the ▶ (Trigger) button. Stop Airflow with `docker compose down`.
 
-Wait for a run to finish before triggering another, and don't run the scripts by hand while it's running. SQLite only allows one writer at a time. The first run takes about 30 minutes (see step 6).
+Wait for a run to finish before triggering another, and don't run the scripts by hand while it's running. SQLite only allows one writer at a time. The first run takes about 30 minutes (see step 7).
 
 **What each step does**
 - `check_keys` fails right away if an API key is missing from `.env`.
