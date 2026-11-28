@@ -96,14 +96,6 @@ With one TMDb key and one OMDb key:
 
 After about 6 daily runs, every movie has been checked on OMDb. Two things won't match our database exactly: trending and now-playing lists can only be pulled for the day you run the script, so your snapshots start on your first run, and counts drift a little because TMDb votes and IMDb ratings keep changing.
 
-### 7. Look at the raw API data (optional)
-
-```bash
-jupyter notebook explore_apis.ipynb
-```
-
-Run all cells. The first cell checks that both keys loaded. The rest show today's trending movies, now-playing movies, one movie's full details from each API, and a combined table.
-
 ## Known issues
 
 - **Rotten Tomatoes scores:** since 2026-11-23, OMDb no longer returns Rotten Tomatoes scores, even for well-known movies (confirmed on two keys on 2026-11-23 and 2026-11-24, including one that returned them on 2026-11-22; `tomatoes=true` returns `N/A` too). IMDb and Metacritic still come through. Movies looked up earlier keep their scores. For critic vs. audience comparisons, use Metascore vs. IMDb rating.
@@ -116,7 +108,6 @@ movies_api_analysis/
 ├── clean_snapshots.py   # builds daily_snapshots_clean from daily_snapshots
 ├── quality_checks.py    # data checks, run after build_database.py
 ├── log_run.py           # logs each run to the pipeline_runs table
-├── explore_apis.ipynb   # first look at both APIs
 ├── eda.ipynb            # exploratory analysis
 ├── airflow/             # Dockerfile, requirements and the DAG
 ├── docker-compose.yml   # runs Airflow (see below)
