@@ -20,6 +20,7 @@ DROP TABLE IF EXISTS omdb_ratings_clean;
 CREATE TABLE omdb_ratings_clean AS
 SELECT
     o.imdb_id,
+    m.tmdb_id,                                 -- TMDb id, so this table joins directly to daily_snapshots_clean
     m.title,                                   -- movie title from the movies table
     o.imdb_rating,                             -- audience score, out of 10
     o.imdb_votes,
